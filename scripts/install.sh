@@ -1,12 +1,15 @@
 #!/bin/bash
 # ============================================================================
-# Hermes Agent Installer
+# Hermes Agent Installer (Merged Fork Edition)
 # ============================================================================
 # Installation script for Linux and macOS.
 # Uses uv for fast Python provisioning and package management.
 #
+# This installer clones from raiden076/hermes-agent (merged-main branch)
+# which combines NousResearch upstream features with outsourc-e webapi support.
+#
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/raiden076/hermes-agent/merged-main/scripts/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -25,9 +28,9 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 BOLD='\033[1m'
 
-# Configuration
-REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+# Configuration - MODIFIED FOR MERGED FORK
+REPO_URL_SSH="git@github.com:raiden076/hermes-agent.git"
+REPO_URL_HTTPS="https://github.com/raiden076/hermes-agent.git"
 HERMES_HOME="$HOME/.hermes"
 INSTALL_DIR="${HERMES_INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
 PYTHON_VERSION="3.11"
@@ -36,7 +39,7 @@ NODE_VERSION="22"
 # Options
 USE_VENV=true
 RUN_SETUP=true
-BRANCH="main"
+BRANCH="merged-main"  # MODIFIED: Default to merged-main instead of main
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -67,14 +70,17 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         -h|--help)
-            echo "Hermes Agent Installer"
+            echo "Hermes Agent Installer (Merged Fork Edition)"
+            echo ""
+            echo "This installer uses raiden076/hermes-agent (merged-main branch)"
+            echo "which combines NousResearch upstream with outsourc-e webapi support."
             echo ""
             echo "Usage: install.sh [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
-            echo "  --branch NAME  Git branch to install (default: main)"
+            echo "  --branch NAME  Git branch to install (default: merged-main)"
             echo "  --dir PATH     Installation directory (default: ~/.hermes/hermes-agent)"
             echo "  -h, --help     Show this help"
             exit 0
@@ -94,9 +100,10 @@ print_banner() {
     echo ""
     echo -e "${MAGENTA}${BOLD}"
     echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│             ⚕ Hermes Agent Installer                    │"
+    echo "│       ⚕ Hermes Agent Installer (Merged Fork)            │"
     echo "├─────────────────────────────────────────────────────────┤"
-    echo "│  An open source AI agent by Nous Research.              │"
+    echo "│  Open source AI agent by Nous Research + WebAPI         │"
+    echo "│  Fork: raiden076/hermes-agent (merged-main)             │"
     echo "└─────────────────────────────────────────────────────────┘"
     echo -e "${NC}"
 }
@@ -139,8 +146,8 @@ detect_os() {
         CYGWIN*|MINGW*|MSYS*)
             OS="windows"
             DISTRO="windows"
-            log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex"
+            log_error "Windows detected. Please use WSL2:"
+            log_info "  https://learn.microsoft.com/en-us/windows/wsl/install"
             exit 1
             ;;
         *)
@@ -348,34 +355,17 @@ install_node() {
     log_info "Downloading $tarball_name..."
     if ! curl -fsSL "$download_url" -o "$tmp_dir/$tarball_name"; then
         log_warn "Download failed"
-        rm -rf "$tmp_dir"
         HAS_NODE=false
         return 0
     fi
 
-    log_info "Extracting to ~/.hermes/node/..."
-    if [[ "$tarball_name" == *.tar.xz ]]; then
-        tar xf "$tmp_dir/$tarball_name" -C "$tmp_dir"
-    else
-        tar xzf "$tmp_dir/$tarball_name" -C "$tmp_dir"
-    fi
-
-    local extracted_dir
-    extracted_dir=$(ls -d "$tmp_dir"/node-v* 2>/dev/null | head -1)
-
-    if [ ! -d "$extracted_dir" ]; then
-        log_warn "Extraction failed"
-        rm -rf "$tmp_dir"
-        HAS_NODE=false
-        return 0
-    fi
-
-    # Place into ~/.hermes/node/ and symlink binaries to ~/.local/bin/
-    rm -rf "$HERMES_HOME/node"
-    mkdir -p "$HERMES_HOME"
-    mv "$extracted_dir" "$HERMES_HOME/node"
+    log_info "Extracting to $HERMES_HOME/node/..."
+    mkdir -p "$HERMES_HOME/node"
+    rm -rf "$HERMES_HOME/node"/* 2>/dev/null || true
+    tar -xf "$tmp_dir/$tarball_name" -C "$HERMES_HOME/node" --strip-components=1
     rm -rf "$tmp_dir"
 
+    # Symlink to ~/.local/bin for PATH access
     mkdir -p "$HOME/.local/bin"
     ln -sf "$HERMES_HOME/node/bin/node" "$HOME/.local/bin/node"
     ln -sf "$HERMES_HOME/node/bin/npm"  "$HOME/.local/bin/npm"
@@ -448,115 +438,65 @@ install_system_packages() {
     fi
 
     # ── Linux: resolve package manager command ──
-    local pkg_install=""
-    case "$DISTRO" in
-        ubuntu|debian) pkg_install="apt install -y"   ;;
-        fedora)        pkg_install="dnf install -y"   ;;
-        arch)          pkg_install="pacman -S --noconfirm" ;;
-    esac
+    local pkg_cmd=""
+    local pkg_args=()
 
-    if [ -n "$pkg_install" ]; then
-        local install_cmd="$pkg_install ${pkgs[*]}"
+    if command -v apt-get &> /dev/null; then
+        pkg_cmd="apt-get"
+        pkg_args=("-qq" "install" "-y")
+    elif command -v dnf &> /dev/null; then
+        pkg_cmd="dnf"
+        pkg_args=("-y" "install")
+    elif command -v pacman &> /dev/null; then
+        pkg_cmd="pacman"
+        pkg_args=("-S" "--noconfirm" "--needed")
+    elif command -v zypper &> /dev/null; then
+        pkg_cmd="zypper"
+        pkg_args=("--non-interactive" "install")
+    elif command -v apk &> /dev/null; then
+        pkg_cmd="apk"
+        pkg_args=("add" "--no-cache")
+    fi
 
-        # Prevent needrestart/whiptail dialogs from blocking non-interactive installs
-        case "$DISTRO" in
-            ubuntu|debian) export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a ;;
+    # Map generic package names to distro-specific names
+    local distro_pkgs=()
+    for p in "${pkgs[@]}"; do
+        case "$p" in
+            ripgrep)
+                case "$pkg_cmd" in
+                    apt-get) distro_pkgs+=("ripgrep") ;;
+                    dnf)     distro_pkgs+=("ripgrep") ;;
+                    pacman)  distro_pkgs+=("ripgrep") ;;
+                    zypper)  distro_pkgs+=("ripgrep") ;;
+                    apk)     distro_pkgs+=("ripgrep") ;;
+                    *)       distro_pkgs+=("ripgrep") ;;
+                esac
+                ;;
+            ffmpeg)
+                distro_pkgs+=("ffmpeg")
+                ;;
         esac
+    done
 
-        # Already root — just install
-        if [ "$(id -u)" -eq 0 ]; then
-            log_info "Installing ${pkgs[*]}..."
-            if $install_cmd; then
-                [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
-                [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
-                return 0
-            fi
-        # Passwordless sudo — just install
-        elif command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
-            log_info "Installing ${pkgs[*]}..."
-            if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd; then
-                [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
-                [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
-                return 0
-            fi
-        # sudo needs password — ask once for everything
-        elif command -v sudo &> /dev/null; then
-            if [ "$IS_INTERACTIVE" = true ]; then
-                echo ""
-                log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
-                log_info "Hermes Agent itself does not require or retain root access."
-                read -p "Install ${description}? (requires sudo) [y/N] " -n 1 -r
-                echo
-                if [[ $REPLY =~ ^[Yy]$ ]]; then
-                    if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd; then
-                        [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
-                        [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
-                        return 0
-                    fi
-                fi
-            elif [ -e /dev/tty ]; then
-                # Non-interactive (e.g. curl | bash) but a terminal is available.
-                # Read the prompt from /dev/tty (same approach the setup wizard uses).
-                echo ""
-                log_info "sudo is needed ONLY to install optional system packages (${pkgs[*]}) via your package manager."
-                log_info "Hermes Agent itself does not require or retain root access."
-                read -p "Install ${description}? [Y/n] " -n 1 -r < /dev/tty
-                echo
-                if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-                    if sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a $install_cmd < /dev/tty; then
-                        [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
-                        [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
-                        return 0
-                    fi
-                fi
-            else
-                log_warn "Non-interactive mode and no terminal available — cannot install system packages"
-                log_info "Install manually after setup completes: sudo $install_cmd"
-            fi
+    # Install
+    if [ -n "$pkg_cmd" ]; then
+        log_info "Installing ${distro_pkgs[*]} via $pkg_cmd..."
+        if sudo "$pkg_cmd" "${pkg_args[@]}" "${distro_pkgs[@]}" 2>/dev/null; then
+            [ "$need_ripgrep" = true ] && HAS_RIPGREP=true && log_success "ripgrep installed"
+            [ "$need_ffmpeg" = true ]  && HAS_FFMPEG=true  && log_success "ffmpeg installed"
+            return 0
+        else
+            log_warn "Package installation failed or was cancelled"
         fi
+    else
+        log_warn "Could not detect package manager"
     fi
 
-    # ── Fallback for ripgrep: cargo ──
-    if [ "$need_ripgrep" = true ] && [ "$HAS_RIPGREP" = false ]; then
-        if command -v cargo &> /dev/null; then
-            log_info "Trying cargo install ripgrep (no sudo needed)..."
-            if cargo install ripgrep; then
-                log_success "ripgrep installed via cargo"
-                HAS_RIPGREP=true
-            fi
-        fi
-    fi
-
-    # ── Show manual instructions for anything still missing ──
-    if [ "$HAS_RIPGREP" = false ] && [ "$need_ripgrep" = true ]; then
-        log_warn "ripgrep not installed (file search will use grep fallback)"
-        show_manual_install_hint "ripgrep"
-    fi
-    if [ "$HAS_FFMPEG" = false ] && [ "$need_ffmpeg" = true ]; then
-        log_warn "ffmpeg not installed (TTS voice messages will be limited)"
-        show_manual_install_hint "ffmpeg"
-    fi
+    log_info "Install manually:"
+    for p in "${pkgs[@]}"; do
+        log_info "  - $p"
+    done
 }
-
-show_manual_install_hint() {
-    local pkg="$1"
-    log_info "To install $pkg manually:"
-    case "$OS" in
-        linux)
-            case "$DISTRO" in
-                ubuntu|debian) log_info "  sudo apt install $pkg" ;;
-                fedora)        log_info "  sudo dnf install $pkg" ;;
-                arch)          log_info "  sudo pacman -S $pkg"   ;;
-                *)             log_info "  Use your package manager or visit the project homepage" ;;
-            esac
-            ;;
-        macos) log_info "  brew install $pkg" ;;
-    esac
-}
-
-# ============================================================================
-# Installation
-# ============================================================================
 
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
@@ -575,6 +515,9 @@ clone_repo() {
                 autostash_ref="$(git rev-parse --verify refs/stash)"
             fi
 
+            # Update remote URL to point to merged fork
+            git remote set-url origin "$REPO_URL_HTTPS"
+            
             git fetch origin
             git checkout "$BRANCH"
             git pull --ff-only origin "$BRANCH"
@@ -637,7 +580,7 @@ clone_repo() {
 
     cd "$INSTALL_DIR"
 
-    log_success "Repository ready"
+    log_success "Repository ready (merged fork with webapi support)"
 }
 
 setup_venv() {
@@ -648,282 +591,139 @@ setup_venv() {
 
     log_info "Creating virtual environment with Python $PYTHON_VERSION..."
 
-    if [ -d "venv" ]; then
-        log_info "Virtual environment already exists, recreating..."
-        rm -rf venv
+    if [ ! -d "venv" ]; then
+        # Use uv to create the venv with the correct Python version
+        $UV_CMD venv --python "$PYTHON_VERSION" venv
+        log_success "Virtual environment created"
+    else
+        log_info "Virtual environment already exists, reusing"
     fi
 
-    # uv creates the venv and pins the Python version in one step
-    $UV_CMD venv venv --python "$PYTHON_VERSION"
+    log_info "Installing Python dependencies (this may take a few minutes)..."
 
-    log_success "Virtual environment ready (Python $PYTHON_VERSION)"
+    # Install dependencies using uv pip (fast!)
+    VENV_PYTHON="$INSTALL_DIR/venv/bin/python"
+    $UV_CMD pip install --python "$VENV_PYTHON" -e "$INSTALL_DIR"
+
+    log_success "Dependencies installed"
 }
 
 install_deps() {
-    log_info "Installing dependencies..."
-
-    if [ "$USE_VENV" = true ]; then
-        # Tell uv to install into our venv (no need to activate)
-        export VIRTUAL_ENV="$INSTALL_DIR/venv"
-    fi
-
-    # On Debian/Ubuntu (including WSL), some Python packages need build tools.
-    # Check and offer to install them if missing.
-    if [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
-        local need_build_tools=false
-        for pkg in gcc python3-dev libffi-dev; do
-            if ! dpkg -s "$pkg" &>/dev/null; then
-                need_build_tools=true
-                break
-            fi
-        done
-        if [ "$need_build_tools" = true ]; then
-            log_info "Some build tools may be needed for Python packages..."
-            if command -v sudo &> /dev/null; then
-                if sudo -n true 2>/dev/null; then
-                    sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
-                    log_success "Build tools installed"
-                else
-                    log_info "sudo is needed ONLY to install build tools (build-essential, python3-dev, libffi-dev) via apt."
-                    log_info "Hermes Agent itself does not require or retain root access."
-                    read -p "Install build tools? [Y/n] " -n 1 -r < /dev/tty
-                    echo
-                    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-                        sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
-                        log_success "Build tools installed"
-                    fi
-                fi
-            fi
-        fi
-    fi
-
-    # Install the main package in editable mode with all extras.
-    # Try [all] first, fall back to base install if extras have issues.
-    ALL_INSTALL_LOG=$(mktemp)
-    if ! $UV_CMD pip install -e ".[all]" 2>"$ALL_INSTALL_LOG"; then
-        log_warn "Full install (.[all]) failed, trying base install..."
-        log_info "Reason: $(tail -5 "$ALL_INSTALL_LOG" | head -3)"
-        rm -f "$ALL_INSTALL_LOG"
-        if ! $UV_CMD pip install -e "."; then
-            log_error "Package installation failed."
-            log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
-            log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
-            exit 1
-        fi
-    else
-        rm -f "$ALL_INSTALL_LOG"
-    fi
-
-    log_success "Main package installed"
-
-    # tinker-atropos (RL training) is optional — skip by default.
-    # To enable RL tools: git submodule update --init tinker-atropos && uv pip install -e "./tinker-atropos"
-    if [ -d "tinker-atropos" ] && [ -f "tinker-atropos/pyproject.toml" ]; then
-        log_info "tinker-atropos submodule found — skipping install (optional, for RL training)"
-        log_info "  To install: $UV_CMD pip install -e \"./tinker-atropos\""
-    fi
-
-    log_success "All dependencies installed"
-}
-
-setup_path() {
-    log_info "Setting up hermes command..."
-
-    if [ "$USE_VENV" = true ]; then
-        HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
-    else
-        HERMES_BIN="$(which hermes 2>/dev/null || echo "")"
-        if [ -z "$HERMES_BIN" ]; then
-            log_warn "hermes not found on PATH after install"
-            return 0
-        fi
-    fi
-
-    # Verify the entry point script was actually generated
-    if [ ! -x "$HERMES_BIN" ]; then
-        log_warn "hermes entry point not found at $HERMES_BIN"
-        log_info "This usually means the pip install didn't complete successfully."
-        log_info "Try: cd $INSTALL_DIR && uv pip install -e '.[all]'"
-        return 0
-    fi
-
-    # Create symlink in ~/.local/bin (standard user binary location, usually on PATH)
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HERMES_BIN" "$HOME/.local/bin/hermes"
-    log_success "Symlinked hermes → ~/.local/bin/hermes"
-
-    # Check if ~/.local/bin is on PATH; if not, add it to shell config.
-    # Detect the user's actual login shell (not the shell running this script,
-    # which is always bash when piped from curl).
-    if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
-        SHELL_CONFIGS=()
-        LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
-        case "$LOGIN_SHELL" in
-            zsh)
-                [ -f "$HOME/.zshrc" ] && SHELL_CONFIGS+=("$HOME/.zshrc")
-                [ -f "$HOME/.zprofile" ] && SHELL_CONFIGS+=("$HOME/.zprofile")
-                # If neither exists, create ~/.zshrc (common on fresh macOS installs)
-                if [ ${#SHELL_CONFIGS[@]} -eq 0 ]; then
-                    touch "$HOME/.zshrc"
-                    SHELL_CONFIGS+=("$HOME/.zshrc")
-                fi
-                ;;
-            bash)
-                [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
-                [ -f "$HOME/.bash_profile" ] && SHELL_CONFIGS+=("$HOME/.bash_profile")
-                ;;
-            *)
-                [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
-                [ -f "$HOME/.zshrc" ] && SHELL_CONFIGS+=("$HOME/.zshrc")
-                ;;
-        esac
-        # Also ensure ~/.profile has it (sourced by login shells on
-        # Ubuntu/Debian/WSL even when ~/.bashrc is skipped)
-        [ -f "$HOME/.profile" ] && SHELL_CONFIGS+=("$HOME/.profile")
-
-        PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
-
-        for SHELL_CONFIG in "${SHELL_CONFIGS[@]}"; do
-            if ! grep -v '^[[:space:]]*#' "$SHELL_CONFIG" 2>/dev/null | grep -qE 'PATH=.*\.local/bin'; then
-                echo "" >> "$SHELL_CONFIG"
-                echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$SHELL_CONFIG"
-                echo "$PATH_LINE" >> "$SHELL_CONFIG"
-                log_success "Added ~/.local/bin to PATH in $SHELL_CONFIG"
-            fi
-        done
-
-        if [ ${#SHELL_CONFIGS[@]} -eq 0 ]; then
-            log_warn "Could not detect shell config file to add ~/.local/bin to PATH"
-            log_info "Add manually: $PATH_LINE"
-        fi
-    else
-        log_info "~/.local/bin already on PATH"
-    fi
-
-    # Export for current session so hermes works immediately
-    export PATH="$HOME/.local/bin:$PATH"
-
-    log_success "hermes command ready"
-}
-
-copy_config_templates() {
-    log_info "Setting up configuration files..."
-
-    # Create ~/.hermes directory structure (config at top level, code in subdir)
-    mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills,whatsapp/session}
-
-    # Create .env at ~/.hermes/.env (top level, easy to find)
-    if [ ! -f "$HERMES_HOME/.env" ]; then
-        if [ -f "$INSTALL_DIR/.env.example" ]; then
-            cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
-            log_success "Created ~/.hermes/.env from template"
-        else
-            touch "$HERMES_HOME/.env"
-            log_success "Created ~/.hermes/.env"
-        fi
-    else
-        log_info "~/.hermes/.env already exists, keeping it"
-    fi
-
-    # Create config.yaml at ~/.hermes/config.yaml (top level, easy to find)
-    if [ ! -f "$HERMES_HOME/config.yaml" ]; then
-        if [ -f "$INSTALL_DIR/cli-config.yaml.example" ]; then
-            cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
-            log_success "Created ~/.hermes/config.yaml from template"
-        fi
-    else
-        log_info "~/.hermes/config.yaml already exists, keeping it"
-    fi
-
-    # Create SOUL.md if it doesn't exist (global persona file)
-    if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
-        cat > "$HERMES_HOME/SOUL.md" << 'SOUL_EOF'
-# Hermes Agent Persona
-
-<!--
-This file defines the agent's personality and tone.
-The agent will embody whatever you write here.
-Edit this to customize how Hermes communicates with you.
-
-Examples:
-  - "You are a warm, playful assistant who uses kaomoji occasionally."
-  - "You are a concise technical expert. No fluff, just facts."
-  - "You speak like a friendly coworker who happens to know everything."
-
-This file is loaded fresh each message -- no restart needed.
-Delete the contents (or this file) to use the default personality.
--->
-SOUL_EOF
-        log_success "Created ~/.hermes/SOUL.md (edit to customize personality)"
-    fi
-
-    log_success "Configuration directory ready: ~/.hermes/"
-
-    # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
-    log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
-        log_success "Skills synced to ~/.hermes/skills/"
-    else
-        # Fallback: simple directory copy if Python sync fails
-        if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
-            cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
-            log_success "Skills copied to ~/.hermes/skills/"
-        fi
-    fi
+    # Already done in setup_venv with uv pip
+    :
 }
 
 install_node_deps() {
-    if [ "$HAS_NODE" = false ]; then
-        log_info "Skipping Node.js dependencies (Node not installed)"
+    log_info "Installing Node.js dependencies for browser tools..."
+
+    cd "$INSTALL_DIR"
+
+    if [ ! -f "package.json" ]; then
+        log_warn "No package.json found, skipping Node.js dependencies"
         return 0
     fi
 
-    if [ -f "$INSTALL_DIR/package.json" ]; then
-        log_info "Installing Node.js dependencies (browser tools)..."
-        cd "$INSTALL_DIR"
-        npm install --silent 2>/dev/null || {
-            log_warn "npm install failed (browser tools may not work)"
-        }
-        log_success "Node.js dependencies installed"
-
-        # Install Playwright browser + system dependencies.
-        # Playwright's install-deps only supports apt/dnf/zypper natively.
-        # For Arch/Manjaro we install the system libs via pacman first.
-        log_info "Installing browser engine (Playwright Chromium)..."
-        case "$DISTRO" in
-            arch|manjaro)
-                if command -v pacman &> /dev/null; then
-                    log_info "Arch/Manjaro detected — installing Chromium system dependencies via pacman..."
-                    if command -v sudo &> /dev/null && sudo -n true 2>/dev/null; then
-                        sudo NEEDRESTART_MODE=a pacman -S --noconfirm --needed \
-                            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
-                    elif [ "$(id -u)" -eq 0 ]; then
-                        pacman -S --noconfirm --needed \
-                            nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib >/dev/null 2>&1 || true
-                    else
-                        log_warn "Cannot install browser deps without sudo. Run manually:"
-                        log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
-                    fi
-                fi
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || true
-                ;;
-            *)
-                log_info "Playwright may request sudo to install browser system dependencies (shared libraries)."
-                log_info "This is standard Playwright setup — Hermes itself does not require root access."
-                cd "$INSTALL_DIR" && npx playwright install --with-deps chromium 2>/dev/null || true
-                ;;
-        esac
-        log_success "Browser engine installed"
+    # Check for pnpm, npm
+    local pkg_manager=""
+    if command -v pnpm &> /dev/null; then
+        pkg_manager="pnpm"
+    elif command -v npm &> /dev/null; then
+        pkg_manager="npm"
+    else
+        log_warn "No package manager found (pnpm or npm), skipping Node.js dependencies"
+        return 0
     fi
 
-    # Install WhatsApp bridge dependencies
-    if [ -f "$INSTALL_DIR/scripts/whatsapp-bridge/package.json" ]; then
-        log_info "Installing WhatsApp bridge dependencies..."
-        cd "$INSTALL_DIR/scripts/whatsapp-bridge"
-        npm install --silent 2>/dev/null || {
-            log_warn "WhatsApp bridge npm install failed (WhatsApp may not work)"
-        }
-        log_success "WhatsApp bridge dependencies installed"
+    # Prefer non-interactive installs
+    if ! $pkg_manager install; then
+        log_warn "Node.js dependency installation failed"
+        log_info "Browser tools may not work correctly"
+    else
+        log_success "Node.js dependencies installed"
+    fi
+}
+
+setup_path() {
+    log_info "Setting up PATH..."
+
+    local bin_dir="$HOME/.local/bin"
+    mkdir -p "$bin_dir"
+
+    # Create wrapper script that activates the venv
+    cat > "$bin_dir/hermes" << 'EOF'
+#!/bin/bash
+# Hermes CLI wrapper - auto-activates the virtual environment
+HERMES_DIR="${HERMES_INSTALL_DIR:-$HOME/.hermes/hermes-agent}"
+
+if [ -f "$HERMES_DIR/venv/bin/python" ]; then
+    exec "$HERMES_DIR/venv/bin/python" -m hermes_cli.main "$@"
+else
+    echo "Error: Hermes not found at $HERMES_DIR"
+    echo "Please reinstall: curl -fsSL ... | bash"
+    exit 1
+fi
+EOF
+
+    chmod +x "$bin_dir/hermes"
+
+    # Create gateway wrapper
+    cat > "$bin_dir/hermes-gateway" << 'EOF'
+#!/bin/bash
+# Hermes Gateway wrapper - for starting the gateway directly
+HERMES_DIR="${HERMES_INSTALL_DIR:-$HOME/.hermes/hermes-agent}"
+
+if [ -f "$HERMES_DIR/venv/bin/python" ]; then
+    exec "$HERMES_DIR/venv/bin/python" -m hermes_cli.main gateway "$@"
+else
+    echo "Error: Hermes not found at $HERMES_DIR"
+    exit 1
+fi
+EOF
+
+    chmod +x "$bin_dir/hermes-gateway"
+
+    # Ensure ~/.local/bin is on PATH
+    local shell_rc=""
+    case "$(basename "${SHELL:-/bin/bash}")" in
+        zsh)
+            shell_rc="$HOME/.zshrc"
+            ;;
+        bash)
+            shell_rc="$HOME/.bashrc"
+            ;;
+        *)
+            shell_rc="$HOME/.bashrc"
+            ;;
+    esac
+
+    if ! grep -q "$bin_dir" "$shell_rc" 2>/dev/null; then
+        echo "" >> "$shell_rc"
+        echo "# Added by Hermes Agent installer" >> "$shell_rc"
+        echo "export PATH=\"$bin_dir:\$PATH\"" >> "$shell_rc"
+        log_info "Added $bin_dir to PATH in $shell_rc"
+    fi
+
+    log_success "PATH configured"
+}
+
+copy_config_templates() {
+    log_info "Setting up configuration..."
+
+    # Create directories
+    mkdir -p "$HERMES_HOME"
+    mkdir -p "$HERMES_HOME/cron"
+    mkdir -p "$HERMES_HOME/logs"
+
+    # Copy .env.example if .env doesn't exist
+    if [ ! -f "$HERMES_HOME/.env" ] && [ -f "$INSTALL_DIR/.env.example" ]; then
+        cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
+        log_info "Created ~/.hermes/.env from template"
+    fi
+
+    # Copy cli-config.yaml.example if config.yaml doesn't exist
+    if [ ! -f "$HERMES_HOME/config.yaml" ] && [ -f "$INSTALL_DIR/cli-config.yaml.example" ]; then
+        cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
+        log_info "Created ~/.hermes/config.yaml from template"
     fi
 }
 
@@ -1045,7 +845,7 @@ print_success() {
     echo ""
     echo -e "${GREEN}${BOLD}"
     echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│              ✓ Installation Complete!                   │"
+    echo "│        ✓ Installation Complete! (Merged Fork)           │"
     echo "└─────────────────────────────────────────────────────────┘"
     echo -e "${NC}"
     echo ""
@@ -1056,19 +856,29 @@ print_success() {
     echo -e "   ${YELLOW}Config:${NC}    ~/.hermes/config.yaml"
     echo -e "   ${YELLOW}API Keys:${NC}  ~/.hermes/.env"
     echo -e "   ${YELLOW}Data:${NC}      ~/.hermes/cron/, sessions/, logs/"
-    echo -e "   ${YELLOW}Code:${NC}      ~/.hermes/hermes-agent/"
+    echo -e "   ${YELLOW}Code:${NC}      ~/.hermes/hermes-agent/ (merged fork)"
     echo ""
 
     echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"
     echo ""
     echo -e "${CYAN}${BOLD}🚀 Commands:${NC}"
     echo ""
-    echo -e "   ${GREEN}hermes${NC}              Start chatting"
+    echo -e "   ${GREEN}hermes${NC}              Start chatting (CLI)"
+    echo -e "   ${GREEN}hermes --gateway${NC}    Start web API gateway (for workspace)"
     echo -e "   ${GREEN}hermes setup${NC}        Configure API keys & settings"
     echo -e "   ${GREEN}hermes config${NC}       View/edit configuration"
-    echo -e "   ${GREEN}hermes config edit${NC}  Open config in editor"
-    echo -e "   ${GREEN}hermes gateway install${NC} Install gateway service (messaging + cron)"
     echo -e "   ${GREEN}hermes update${NC}       Update to latest version"
+    echo ""
+
+    echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"
+    echo ""
+    echo -e "${MAGENTA}${BOLD}🔗 WebAPI Support:${NC}"
+    echo ""
+    echo -e "   This installation includes webapi endpoints for Hermes Workspace:"
+    echo -e "   ${CYAN}http://127.0.0.1:8642${NC}"
+    echo ""
+    echo -e "   Endpoints: /health, /v1/models, /v1/chat/completions"
+    echo -e "              /api/skills, /api/sessions, /api/memory, /api/config"
     echo ""
 
     echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"
