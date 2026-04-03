@@ -1,0 +1,109 @@
+name: Sync Fork with Upstreams
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout merged-main branch
+        uses: actions/checkout@v4
+        with:
+          ref: merged-main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remotes
+        run: |
+          git remote add upstream-primary https://github.com/NousResearch/hermes-agent.git
+          git remote add upstream-secondary https://github.com/outsourc-e/hermes-agent.git
+          git fetch upstream-primary
+          git fetch upstream-secondary
+
+      - name: Check for changes
+        id: check
+        run: |
+          # Check if upstream-primary has new commits
+          PRIMARY_NEW=$(git rev-list --count HEAD..upstream-primary/main)
+          echo "primary_new=$PRIMARY_NEW" >> $GITHUB_OUTPUT
+          
+          # Check if upstream-secondary has new commits  
+          SECONDARY_NEW=$(git rev-list --count HEAD..upstream-secondary/main)
+          echo "secondary_new=$SECONDARY_NEW" >> $GITHUB_OUTPUT
+          
+          if [ "$PRIMARY_NEW" -gt 0 ] || [ "$SECONDARY_NEW" -gt 0 ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Merge upstream-secondary (webapi features)
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          git merge upstream-secondary/main -m "Merge outsourc-e/webapi updates ($(date +%Y-%m-%d))" || true
+
+      - name: Merge upstream-primary (latest features)
+        if: steps.check.outputs.has_changes == 'true'
+        id: merge
+        run: |
+          git merge upstream-primary/main -m "Merge NousResearch upstream updates ($(date +%Y-%m-%d))" || echo "conflict=true" >> $GITHUB_OUTPUT
+
+      - name: Handle conflicts (prefer ours for api_server.py)
+        if: steps.merge.outputs.conflict == 'true'
+        run: |
+          # Check for conflicts
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            echo "Conflicts detected, attempting to auto-resolve..."
+            
+            # For known conflict files, prefer our version (merged)
+            for file in $(git diff --name-only --diff-filter=U); do
+              if [ "$file" = "gateway/platforms/api_server.py" ]; then
+                echo "Resolving $file (preferring ours)"
+                git checkout --ours "$file"
+                git add "$file"
+              fi
+            done
+            
+            # Check if any conflicts remain
+            if git diff --name-only --diff-filter=U | grep -q .; then
+              echo "Unresolved conflicts remain. Manual intervention needed."
+              git diff --name-only --diff-filter=U
+              exit 1
+            else
+              git commit -m "Merge upstream updates with auto-resolved conflicts ($(date +%Y-%m-%d))"
+            fi
+          fi
+
+      - name: Push to merged-main
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          git push origin merged-main
+          echo "Successfully synced fork with upstreams"
+
+      - name: Create sync report
+        if: steps.check.outputs.has_changes == 'true'
+        run: |
+          echo "## Sync Report ($(date +%Y-%m-%d))" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Primary (NousResearch)**: ${{ steps.check.outputs.primary_new }} new commits" >> $GITHUB_STEP_SUMMARY
+          echo "- **Secondary (outsourc-e)**: ${{ steps.check.outputs.secondary_new }} new commits" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Both upstreams merged into `merged-main` branch." >> $GITHUB_STEP_SUMMARY
+
+      - name: No changes
+        if: steps.check.outputs.has_changes == 'false'
+        run: |
+          echo "No new commits from upstreams. Fork is up to date."
+          echo "## Sync Report ($(date +%Y-%m-%d))" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No new changes from upstream repositories." >> $GITHUB_STEP_SUMMARY
